@@ -1,0 +1,218 @@
+import express from "express"
+import path from "path"
+import http from "http"
+import socketIO from "socket.io"
+import BananaGame from "./bananasGame"
+import Player from "./bananaPlayer"
+
+
+type LoginInfo = {
+    ScreenName: string
+    SentFrom: string
+    Password: string
+    Mascot: string
+}
+const port: number = 3000
+
+
+class App {
+
+    private server: http.Server
+    private port: number
+    private io: socketIO.Server
+
+    private bananaGame: BananaGame
+
+    constructor(port: number) {
+        this.port = port
+
+        const app = express()
+        app.use(express.static(path.join(__dirname, '../client')))
+        app.use('/jquery', express.static(path.join(__dirname, '../../node_modules/jquery/dist')))
+        app.use('/bootstrap', express.static(path.join(__dirname, '../../node_modules/bootstrap/dist')))
+
+        this.server = new http.Server(app)
+        this.io = socketIO(this.server);
+
+        this.bananaGame = new BananaGame()
+
+
+        this.io.on('connection', (socket: socketIO.Socket) => {
+            console.log('A user connected : ' + socket.id)
+            
+            if (this.bananaGame.Players.length === 0) //If all players have logged off
+                this.bananaGame = new BananaGame()
+
+            //Send the client the ID the server uses for them
+            this.io.to(socket.id).emit("serverSocketID", socket.id)
+
+            // TEMPORARY
+            if (this.bananaGame.getPlayerByScreenName("Snap") === null)
+                this.addPlayerToGame(<LoginInfo>{ScreenName: "Snap", SentFrom: socket.id, Password: "gutterfolk", Mascot: "🐶"})
+            else if (this.bananaGame.getPlayerByScreenName("Crackle") === null)
+                this.addPlayerToGame(<LoginInfo>{ScreenName: "Crackle", SentFrom: socket.id, Password: "gutterfolk", Mascot: "🌷"})
+            else if (this.bananaGame.getPlayerByScreenName("Pop") === null)
+                this.addPlayerToGame(<LoginInfo>{ScreenName: "Pop", SentFrom: socket.id, Password: "gutterfolk", Mascot: "❤️"})
+            // TEMPORARY
+
+
+            socket.on('disconnect', () => {
+                console.log('Socket disconnected : ' + socket.id)
+                this.dropPlayerBySocketID(socket.id)
+            })
+
+            socket.on('sendLoginInfo', (loginInfo: LoginInfo) => {
+                this.addPlayerToGame(loginInfo)                
+            })
+
+            socket.on('requestNewRound', (socketID: string) => {
+                this.startNewRound(socketID)                
+            })
+
+            socket.on('submitCard', (socketID: string, cardID: number) => {
+                this.submitPlayerCard(socketID, cardID)                
+            })
+
+            socket.on('submitTzarSelection', (socketID: string, cardID: number) => {
+                this.submitCardTzarSelection(socketID, cardID)                
+            })
+
+            socket.on('requestDiscard', (socketID: string, cardID: number) => {
+                this.discardPlayerCard(socketID, cardID)                
+            })
+
+            socket.on('chatMessage', (socketID: string, chatMessage: string) => {
+                this.addChatMessageSentFromPlayer(socketID, chatMessage)
+            })
+
+        })
+
+    }
+
+
+
+    // THE GAME
+    public sendBananaGameInformationToClients = () => {
+        for (let player of this.bananaGame.Players)
+            this.io.to(player.SocketID).emit("bananaGameInfo", this.bananaGame, player, 
+                this.bananaGame.Players, this.bananaGame.SubmittedCards)
+    }
+
+    
+    // THE MESSAGES
+    public addChatMessageSentFromPlayer(playerSocketID: string, messageText: string) {
+        let messageSender = this.bananaGame.getPlayerBySocketID(playerSocketID)
+        if (messageSender != null)
+            this.bananaGame.AddNewChatMessage("PlayerMessage", messageSender, messageText)
+
+        this.io.emit('chatMessages', this.bananaGame.ChatMessages)
+    }
+
+    public addChatMessageSentFromGame(messageText: string) {
+        this.bananaGame.AddNewChatMessage("GameMessage", null, messageText)
+        this.io.emit('chatMessages', this.bananaGame.ChatMessages)
+    }
+
+
+
+    // THE PLAYERS
+    public dropPlayerBySocketID = (playerSocketID: string) => {
+        let playerForDeletion = this.bananaGame.getPlayerBySocketID(playerSocketID)
+        if (playerForDeletion != null) 
+        {
+            let roundInProgress: boolean = this.bananaGame.removePlayerBySocketID(playerSocketID)
+
+            if (this.bananaGame.Players.length < 3)
+            {
+                this.addChatMessageSentFromGame(playerForDeletion.ScreenName + " left the game!")
+                this.bananaGame.changeGameStatus("Not Started")
+            }
+            else if (roundInProgress)
+            {
+                this.addChatMessageSentFromGame(playerForDeletion.ScreenName + " left the game! New round automatically started.")
+                this.bananaGame.changeGameStatus("Round: Submitting Cards")
+            }
+            
+            this.sendBananaGameInformationToClients()
+        }
+    }
+
+
+    public addPlayerToGame = (loginInfo: LoginInfo) => {
+        let errorString = this.bananaGame.addNewPlayer(loginInfo)
+
+        if (errorString === "")
+        {
+            this.sendBananaGameInformationToClients() //Send back information to the new player
+            this.io.to(loginInfo.SentFrom).emit("showGame", this.bananaGame.getPlayerBySocketID(loginInfo.SentFrom))
+            this.addChatMessageSentFromGame(loginInfo.ScreenName + " joined the game.")
+        }
+        else
+            this.io.to(loginInfo.SentFrom).emit("errorMessage", errorString)
+    }
+
+
+
+    // GAME MECHANICS
+    public startNewRound = (socketID: string) => {
+        if (this.bananaGame.GameState === "Not Started" || this.bananaGame.GameState === "Round: Results"
+                || this.bananaGame.getPlayerBySocketID(socketID).ScreenName === "Anna")
+        {
+            this.bananaGame.changeGameStatus("Round: Submitting Cards")
+            this.sendBananaGameInformationToClients()
+        }
+
+        else
+            this.io.to(socketID).emit("errorMessage", "Round currently in play, cannot start new round.")
+    }
+
+
+    public submitPlayerCard = (socketID: string, cardID: number) => {
+        let errorString = this.bananaGame.playerCardSubmission(socketID, cardID)
+
+        if (errorString === "")
+        {
+            this.sendBananaGameInformationToClients()
+
+            if (this.bananaGame.SubmittedCards.length === this.bananaGame.Players.length - 1)
+            {
+                this.bananaGame.changeGameStatus("Round: Tzar Selection")
+                this.sendBananaGameInformationToClients()
+            }
+        }
+        else
+            this.io.to(socketID).emit("errorMessage", errorString)
+     }
+
+
+    public submitCardTzarSelection = (socketID: string, cardID: number) => {
+        let errorString = this.bananaGame.submitCardTzarSelection(socketID, cardID)
+
+        if (errorString === "")
+        {
+            this.sendBananaGameInformationToClients()
+            this.addChatMessageSentFromGame(this.bananaGame.RoundWinnerScreenName + " won this round!")
+        }
+        else
+            this.io.to(socketID).emit("errorMessage", errorString)
+    }
+
+
+    public discardPlayerCard = (socketID: string, cardID: number) => {
+        let errorString = this.bananaGame.DiscardPlayerCard(socketID, cardID)
+
+        if (errorString === "")
+            this.sendBananaGameInformationToClients()
+        else
+            this.io.to(socketID).emit("errorMessage", errorString)
+    }
+    
+
+    public Start() {
+        this.server.listen(this.port)
+        console.log( `Server listening on port ${this.port}.` )
+    }
+
+}
+
+new App(port). Start()
