@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bananas to Bananas</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="login-screen">
+        <h2>Login</h2>
+        <input type="text" id="username" placeholder="Enter your username">
+        <button id="login-button">Login</button>
+    </div>
+
+    <div id="game-screen" style="display: none;">
+        <h2>Guess the Secret Number</h2>
+        <p id="welcome-message"></p>
+        <input type="number" id="guess-input" placeholder="Enter your guess">
+        <button id="guess-button">Submit Guess</button>
+        <p id="feedback-message"></p>
+        <div id="announcement" style="display: none;"></div>
+    </div>
+
+    <script src="bananaGame.js"></script>
+</body>
+</html>
